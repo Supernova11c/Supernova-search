@@ -1,0 +1,14 @@
+[package]
+name = "supernova_networking"
+version = "0.2.0"
+edition = "2021"
+
+[dependencies]
+thiserror = "1.0"
+supernova_url = { path = "../url" }
+rustls = "0.20"
+webpki-roots = "0.22"
+
+[lib]
+name = "supernova_networking"
+path = "src/lib.rs"
