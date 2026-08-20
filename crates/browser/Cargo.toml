@@ -1,0 +1,13 @@
+[package]
+name = "supernova_browser"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+supernova_core = { path = "../core" }
+supernova_url = { path = "../url" }
+supernova_networking = { path = "../networking" }
+supernova_html = { path = "../html" }
+
+[profile.dev]
+opt-level = 0

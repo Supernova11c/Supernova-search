@@ -1,0 +1,11 @@
+[package]
+name = "supernova_url"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "supernova_url"
+path = "src/lib.rs"
+
+[dependencies]
+thiserror = "1.0"
