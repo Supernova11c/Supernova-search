@@ -1,0 +1,13 @@
+[package]
+name = "supernova_html"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+supernova_networking = { path = "../networking" }
+supernova_url = { path = "../url" }
+thiserror = "1.0"
+
+[lib]
+name = "supernova_html"
+path = "src/lib.rs"

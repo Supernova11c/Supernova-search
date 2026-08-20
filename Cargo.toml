@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "crates/url",
+    "crates/core",
+    "crates/browser",
+    "crates/networking",
+    "crates/html",
+]
