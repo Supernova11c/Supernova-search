@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#090b16">
+  <title>{% if query %}{{ query }} — {% endif %}Supernova Search</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="ambient ambient-one"></div><div class="ambient ambient-two"></div>
+  <header class="topbar">
+    <a class="brand" href="{{ url_for('index') }}" aria-label="Supernova Search home">
+      <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span><span></span></span>
+      <span>supernova<span class="brand-light"> search</span></span>
+    </a>
+    <div class="index-indicator"><span class="pulse"></span>{{ '{:,}'.format(document_count) }} pages indexed</div>
+  </header>
+
+  <main class="page-shell">
+    <section class="hero {% if query %}hero-compact{% endif %}">
+      {% if not query %}
+        <div class="eyebrow"><span class="eyebrow-line"></span> YOUR CORNER OF THE WEB</div>
+        <h1>Find your next<br><span class="gradient-text">bright idea.</span></h1>
+        <p class="hero-copy">A little search engine with a universe of possibility.</p>
+      {% else %}
+        <a class="mini-brand" href="{{ url_for('index') }}"><span class="mini-star">✦</span> SUPER NOVA SEARCH</a>
+      {% endif %}
+      <form class="search-form" action="{{ url_for('index') }}" method="get" role="search">
+        <span class="search-icon" aria-hidden="true"></span>
+        <input type="search" name="q" value="{{ query }}" placeholder="Search the web of your choosing…" aria-label="Search query" autofocus>
+        <kbd>↵</kbd>
+        <button type="submit" aria-label="Search"><span>Search</span><span class="button-arrow">↗</span></button>
+      </form>
+      {% if not query %}
+        <div class="hero-hint"><span>Try</span> <a href="{{ url_for('index', q='python search') }}">python search</a><i>·</i><a href="{{ url_for('index', q='machine learning') }}">machine learning</a><i>·</i><a href="{{ url_for('index', q='web design') }}">web design</a></div>
+      {% endif %}
+    </section>
+
+    {% if error %}<div class="notice notice-error"><span>!</span>{{ error }}</div>{% endif %}
+
+    {% if query %}
+      <section class="results-section">
+        <div class="results-heading"><div><div class="section-kicker">SEARCH RESULTS</div><h2>Results for <span>“{{ query }}”</span></h2></div><div class="result-count">{{ results|length }} <span>found</span></div></div>
+        {% if results %}
+          <div class="results-list">
+            {% for result in results %}
+              <article class="result-card">
+                <div class="result-domain"><span class="favicon">✦</span><span>{{ result.url }}</span></div>
+                <h3><a href="{{ result.url }}" target="_blank" rel="noopener noreferrer">{{ result.title or result.url }}</a></h3>
+                <p>{{ result.snippet }}</p>
+                <div class="result-meta"><span class="rank-dot">{{ '%02d'|format(loop.index) }}</span><span>RELEVANCE {{ '%.3f'|format(result.score) }}</span></div>
+              </article>
+            {% endfor %}
+          </div>
+        {% else %}
+          <div class="empty-state"><div class="empty-orbit">✦</div><h3>No pages found just yet</h3><p>Try a different query, or add a site below to grow your search universe.</p></div>
+        {% endif %}
+      </section>
+    {% else %}
+      <section class="crawl-panel">
+        <div class="crawl-icon">↗</div><div class="crawl-copy"><div class="section-kicker">GROW YOUR UNIVERSE</div><h2>Bring a website into orbit</h2><p>Index a public website you own or have permission to crawl.</p></div>
+        <form class="crawl-form" action="{{ url_for('start_crawl') }}" method="post">
+          <label class="visually-hidden" for="crawl-url">Website URL</label>
+          <input id="crawl-url" name="url" type="url" placeholder="https://example.com" required maxlength="2048">
+          <button type="submit">Add site <span>↗</span></button>
+        </form>
+        <div class="crawl-footnote"><span class="shield">◇</span> Respects robots.txt · Up to 25 pages · Same-site only</div>
+      </section>
+    {% endif %}
+    <footer><span>SUPER NOVA SEARCH</span><span>Curiosity, in the right direction.</span></footer>
+  </main>
+</body>
+</html>

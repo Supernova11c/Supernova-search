@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="2;url={{ url_for('crawl_status', job_id=job_id) }}">
+  <title>Adding a site — Supernova Search</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body><div class="ambient ambient-one"></div><div class="ambient ambient-two"></div>
+  <header class="topbar"><a class="brand" href="{{ url_for('index') }}"><span class="brand-mark"><span></span><span></span><span></span><span></span></span><span>supernova<span class="brand-light"> search</span></span></a><div class="index-indicator"><span class="pulse"></span>{{ '{:,}'.format(document_count) }} pages indexed</div></header>
+  <main class="page-shell status-shell">
+    <section class="status-card">
+      {% if job.status == 'running' %}
+        <div class="loader-orbit"><span>✦</span></div><div class="section-kicker">EXPLORING THE WEB</div><h1>Bringing your site<br><span class="gradient-text">into orbit.</span></h1><p>Supernova Search is carefully checking <strong>{{ job.url }}</strong>, following site rules and collecting pages. This page will update automatically.</p><div class="progress-track"><span></span></div><div class="status-caption">Crawling · This can take a little while</div>
+      {% elif job.status == 'complete' %}
+        <div class="success-orbit">✦</div><div class="section-kicker">MISSION COMPLETE</div><h1>Your universe just<br><span class="gradient-text">got bigger.</span></h1><p>Added <strong>{{ job.indexed }}</strong> page(s) from <strong>{{ job.url }}</strong>. Your index now contains {{ job.total }} pages.</p><a class="primary-link" href="{{ url_for('index') }}">Start searching <span>↗</span></a>
+      {% else %}
+        <div class="failure-orbit">!</div><div class="section-kicker">MISSION PAUSED</div><h1>We couldn't add<br><span class="gradient-text">that site.</span></h1><p>{{ job.error or 'The site did not return any indexable pages. Check its URL and robots.txt rules, then try again.' }}</p><a class="primary-link" href="{{ url_for('index') }}">Back to search <span>↗</span></a>
+      {% endif %}
+    </section>
+    <footer><span>SUPER NOVA SEARCH</span><span>Curiosity, in the right direction.</span></footer>
+  </main>
+</body></html>

@@ -1,53 +1,40 @@
 # Supernova Search
 
-A small, local web search engine written in Python. It crawls public websites, stores pages in SQLite, builds a keyword index, ranks with BM25, and can optionally use vector similarity and a cross-encoder reranker.
+Supernova Search is a local Python web search engine with a polished dark interface. It crawls public websites, stores pages in SQLite, indexes keywords with FTS5, ranks with BM25-style scoring and reciprocal-rank fusion, and optionally adds semantic vectors and a neural cross-encoder reranker.
 
-## Install
+## Install and launch the web UI
 
 ```bash
 python -m venv .venv
 # Linux/macOS
 source .venv/bin/activate
-# Windows PowerShell: .venv\Scripts\Activate.ps1
+# Windows PowerShell: .venv\\Scripts\\Activate.ps1
 pip install -r requirements.txt
+python app.py
 ```
 
-Semantic vectors and neural reranking are optional because they download machine-learning models on first use:
+Open <http://127.0.0.1:5000>. Search indexed pages from the home page, or enter a public website URL in **Bring a website into orbit**. UI crawls are intentionally bounded to 25 pages and one link depth, are restricted to the seed host, and honor robots.txt. The app binds to localhost by default. Use `SUPERNOVA_DB` to change the SQLite database path, or `SUPERNOVA_PORT` to change the port.
 
-```bash
-pip install -r requirements-semantic.txt
-```
-
-## Crawl and index
-
-Start with a site you own or are allowed to crawl:
+## Crawl from the command line
 
 ```bash
 python main.py crawl https://example.com --max-pages 100 --max-depth 2 --delay 1
-```
-
-Several seed URLs can be provided. Crawling is limited to each seed's host, observes `robots.txt`, uses a descriptive user agent, and applies page, depth, delay, response-size, and timeout limits. The SQLite database (`supernova.db` by default) persists between runs. Change it with `--db path/to/index.db`.
-
-## Search
-
-```bash
 python main.py search "python search engine" --top-k 10
 ```
 
-Enable semantic vector retrieval:
+Use only on sites you own or have permission to crawl. The crawler uses a descriptive user agent, checks robots.txt, limits response sizes and timeouts, avoids non-public IP destinations, and stays on each seed's host.
+
+## Optional semantic retrieval and reranking
 
 ```bash
-python main.py --semantic search "how do search rankings work"
+pip install -r requirements-semantic.txt
+python main.py --semantic --rerank search "how does a search engine rank pages"
 ```
 
-Use the cross-encoder reranker too (more compute-intensive):
+The first semantic run downloads `sentence-transformers/all-MiniLM-L6-v2`; reranking uses `cross-encoder/ms-marco-MiniLM-L-6-v2`. Embeddings are stored in SQLite alongside the separate FTS5 keyword index. This lightweight implementation scans local vectors and is designed for personal/small collections, not web-scale search.
+
+## Tests
 
 ```bash
-python main.py --semantic --rerank search "python search engine"
+python -m unittest discover -s tests -v
 ```
-
-The first semantic run downloads the `all-MiniLM-L6-v2` embedding model; reranking uses `cross-encoder/ms-marco-MiniLM-L-6-v2`. Embeddings are stored in the `vectors` SQLite table. Keyword postings live in SQLite FTS5, with BM25 scores fused with keyword/vector ranks using reciprocal rank fusion. The reranker is applied to the fused candidate set.
-
-## Notes
-
-This is a practical single-machine starter, not a web-scale crawler: search candidates and vectors are processed locally, and the optional vector index currently scans stored vectors. For large collections, move the vector table to a dedicated vector database and add distributed crawling, deduplication, canonical URL handling, and operational monitoring. Always follow site terms, robots directives, and applicable law.
