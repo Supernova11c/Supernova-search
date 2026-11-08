@@ -1,0 +1,28 @@
+services:
+  django:
+    build: .
+    command: sh -c "python manage.py migrate --noinput && python manage.py collectstatic --noinput && gunicorn --workers 2 --bind 0.0.0.0:8000 supernova_site.wsgi:application"
+    environment:
+      DJANGO_SETTINGS_MODULE: supernova_site.settings
+      SUPERNOVA_DB: /data/supernova.db
+      SUPERNOVA_SECRET_KEY: ${SUPERNOVA_SECRET_KEY:?Set SUPERNOVA_SECRET_KEY}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-127.0.0.1,localhost}
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - supernova-data:/data
+    restart: unless-stopped
+
+  url-worker:
+    build: .
+    command: python manage.py process_url_queue --poll 5
+    environment:
+      DJANGO_SETTINGS_MODULE: supernova_site.settings
+      SUPERNOVA_DB: /data/supernova.db
+      SUPERNOVA_SECRET_KEY: ${SUPERNOVA_SECRET_KEY:?Set SUPERNOVA_SECRET_KEY}
+    volumes:
+      - supernova-data:/data
+    restart: unless-stopped
+
+volumes:
+  supernova-data:
