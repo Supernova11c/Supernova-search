@@ -12,66 +12,129 @@
 </head>
 <body>
   <div class="ambient ambient-one"></div><div class="ambient ambient-two"></div>
+
   <header class="topbar">
     <a class="brand" href="{{ url_for('index') }}" aria-label="Supernova Search home">
       <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span><span></span></span>
       <span>supernova<span class="brand-light"> search</span></span>
     </a>
-    <div class="index-indicator"><span class="pulse"></span>{{ '{:,}'.format(document_count) }} pages indexed</div>
+    <div class="topbar-actions">
+      <div class="index-indicator"><span class="pulse"></span>{{ '{:,}'.format(document_count) }} pages indexed</div>
+      <a class="tiny-link" href="#crawl-panel">Add site</a>
+    </div>
   </header>
 
   <main class="page-shell">
     <section class="hero {% if query %}hero-compact{% endif %}">
       {% if not query %}
-        <div class="eyebrow"><span class="eyebrow-line"></span> YOUR CORNER OF THE WEB</div>
-        <h1>Find your next<br><span class="gradient-text">bright idea.</span></h1>
-        <p class="hero-copy">A little search engine with a universe of possibility.</p>
+        <div class="eyebrow"><span class="eyebrow-line"></span> DISCOVER. INDEX. SEARCH.</div>
+        <h1>Search the web with a<br><span class="gradient-text">little more spark.</span></h1>
+        <p class="hero-copy">A smart local search engine for the pages you care about.</p>
       {% else %}
-        <a class="mini-brand" href="{{ url_for('index') }}"><span class="mini-star">✦</span> SUPER NOVA SEARCH</a>
+        <div class="mini-brand-row"><a class="mini-brand" href="{{ url_for('index') }}"><span class="mini-star">✦</span> SUPER NOVA SEARCH</a></div>
       {% endif %}
+
       <form class="search-form" action="{{ url_for('index') }}" method="get" role="search">
         <span class="search-icon" aria-hidden="true"></span>
-        <input type="search" name="q" value="{{ query }}" placeholder="Search the web of your choosing…" aria-label="Search query" autofocus>
-        <kbd>↵</kbd>
+        <input type="search" name="q" value="{{ query }}" placeholder="Search websites, docs, analysis, ideas…" aria-label="Search query" autofocus>
         <button type="submit" aria-label="Search"><span>Search</span><span class="button-arrow">↗</span></button>
       </form>
-      {% if not query %}
-        <div class="hero-hint"><span>Try</span> <a href="{{ url_for('index', q='python search') }}">python search</a><i>·</i><a href="{{ url_for('index', q='machine learning') }}">machine learning</a><i>·</i><a href="{{ url_for('index', q='web design') }}">web design</a></div>
-      {% endif %}
+
+      <div class="toolbar-row">
+        <div class="filter-list" aria-label="Search categories">
+          {% for slug, label in categories %}
+            <a href="{{ url_for('index', q=query, category=slug, sort=selected_sort) if query else url_for('index', category=slug, sort=selected_sort) }}"
+               class="filter-chip {% if selected_category == slug %}active{% endif %}">
+               {{ label }}
+            </a>
+          {% endfor %}
+        </div>
+
+        <div class="sort-box">
+          <label for="sort-select">Sort</label>
+          <select id="sort-select" onchange="window.location.href=this.value">
+            <option value="{{ url_for('index', q=query, category=selected_category, sort='relevance') }}" {% if selected_sort == 'relevance' %}selected{% endif %}>Relevance</option>
+            <option value="{{ url_for('index', q=query, category=selected_category, sort='latest') }}" {% if selected_sort == 'latest' %}selected{% endif %}>Latest</option>
+            <option value="{{ url_for('index', q=query, category=selected_category, sort='site') }}" {% if selected_sort == 'site' %}selected{% endif %}>Site</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="search-meta-strip">
+        <div class="meta-pill">Trending</div>
+        <div class="meta-links">
+          <a href="{{ url_for('index', q='python search engine') }}">python search engine</a>
+          <a href="{{ url_for('index', q='machine learning') }}">machine learning</a>
+          <a href="{{ url_for('index', q='web design') }}">web design</a>
+        </div>
+      </div>
+
+      <div class="recent-searches-wrap">
+        <div class="section-kicker">RECENT SEARCHES</div>
+        <div class="recent-searches" id="recent-searches"></div>
+      </div>
     </section>
 
     {% if error %}<div class="notice notice-error"><span>!</span>{{ error }}</div>{% endif %}
 
     {% if query %}
       <section class="results-section">
-        <div class="results-heading"><div><div class="section-kicker">SEARCH RESULTS</div><h2>Results for <span>“{{ query }}”</span></h2></div><div class="result-count">{{ results|length }} <span>found</span></div></div>
+        <div class="results-heading">
+          <div>
+            <div class="section-kicker">SEARCH RESULTS</div>
+            <h2>Results for <span>“{{ query }}”</span></h2>
+          </div>
+          <div class="result-count">{{ results|length }} <span>shown</span></div>
+        </div>
+
         {% if results %}
           <div class="results-list">
             {% for result in results %}
               <article class="result-card">
-                <div class="result-domain"><span class="favicon">✦</span><span>{{ result.url }}</span></div>
+                <div class="result-topline">
+                  <div class="result-domain"><span class="favicon">✦</span><span>{{ result.site or result.url }}</span></div>
+                  <span class="category-badge {{ result.category }}">{{ result.category }}</span>
+                </div>
                 <h3><a href="{{ result.url }}" target="_blank" rel="noopener noreferrer">{{ result.title or result.url }}</a></h3>
                 <p>{{ result.snippet }}</p>
-                <div class="result-meta"><span class="rank-dot">{{ '%02d'|format(loop.index) }}</span><span>RELEVANCE {{ '%.3f'|format(result.score) }}</span></div>
+                <div class="result-meta">
+                  <span class="rank-dot">{{ '%02d'|format(loop.index) }}</span>
+                  <span>RELEVANCE {{ '%.3f'|format(result.score) }}</span>
+                </div>
               </article>
             {% endfor %}
           </div>
         {% else %}
-          <div class="empty-state"><div class="empty-orbit">✦</div><h3>No pages found just yet</h3><p>Try a different query, or add a site below to grow your search universe.</p></div>
+          <div class="empty-state">
+            <div class="empty-orbit">✦</div>
+            <h3>No pages found just yet</h3>
+            <p>Try a different query or index another site to expand your corpus.</p>
+          </div>
         {% endif %}
       </section>
     {% else %}
-      <section class="crawl-panel">
-        <div class="crawl-icon">↗</div><div class="crawl-copy"><div class="section-kicker">GROW YOUR UNIVERSE</div><h2>Bring a website into orbit</h2><p>Index a public website you own or have permission to crawl.</p></div>
+      <section class="crawl-panel" id="crawl-panel">
+        <div class="crawl-icon">↗</div>
+        <div class="crawl-copy">
+          <div class="section-kicker">GROW YOUR UNIVERSE</div>
+          <h2>Bring a website into orbit</h2>
+          <p>Index a public website you own or have permission to crawl.</p>
+        </div>
         <form class="crawl-form" action="{{ url_for('start_crawl') }}" method="post">
           <label class="visually-hidden" for="crawl-url">Website URL</label>
           <input id="crawl-url" name="url" type="url" placeholder="https://example.com" required maxlength="2048">
           <button type="submit">Add site <span>↗</span></button>
         </form>
-        <div class="crawl-footnote"><span class="shield">◇</span> Respects robots.txt · Up to 25 pages · Same-site only</div>
+        <div class="crawl-footnote"><span class="shield">◇</span> Respects robots.txt · Same-host only · Bounded crawl</div>
       </section>
     {% endif %}
-    <footer><span>SUPER NOVA SEARCH</span><span>Curiosity, in the right direction.</span></footer>
+
+    <footer>
+      <span>SUPER NOVA SEARCH</span>
+      <span>Curiosity, in the right direction.</span>
+    </footer>
   </main>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>

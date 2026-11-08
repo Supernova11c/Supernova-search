@@ -7,11 +7,17 @@ import math
 import re
 import sqlite3
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Optional
 from urllib.parse import urlparse
 
 TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
+
+CATEGORIES = {
+    "tech": ["python", "programming", "software", "code", "web", "api", "developer", "machine", "data", "ai", "database", "server", "backend", "frontend"],
+    "science": ["science", "research", "physics", "chemistry", "biology", "lab", "astronomy", "genetics", "equation"],
+    "business": ["business", "startup", "marketing", "sales", "team", "product", "growth", "finance", "brand"],
+    "health": ["health", "fitness", "wellness", "nutrition", "medicine", "doctor", "medical", "sleep", "training"],
+    "news": ["news", "politics", "world", "report", "current", "economy", "media", "publication"],
+}
 
 
 @dataclass
@@ -20,10 +26,12 @@ class SearchResult:
     title: str
     snippet: str
     score: float
+    category: str = "general"
+    site: str = ""
 
 
 class SearchEngine:
-    """Persistent hybrid index. SQLite FTS5 stores keyword postings and vectors are persisted separately."""
+    """Persistent hybrid index. SQLite FTS5 stores keyword postings and vectors are kept separately."""
 
     def __init__(self, db_path="supernova.db", semantic=False, rerank=False):
         self.db_path = str(db_path)
@@ -53,10 +61,12 @@ class SearchEngine:
                 url TEXT NOT NULL UNIQUE,
                 title TEXT NOT NULL DEFAULT '',
                 text TEXT NOT NULL DEFAULT '',
+                category TEXT NOT NULL DEFAULT 'general',
+                site TEXT NOT NULL DEFAULT '',
                 fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
-                title, text, content='documents', content_rowid='id', tokenize='unicode61'
+                title, text, category, site, content='documents', content_rowid='id', tokenize='unicode61'
             );
             CREATE TABLE IF NOT EXISTS vectors (
                 document_id INTEGER PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
@@ -71,25 +81,49 @@ class SearchEngine:
     def tokenize(text):
         return TOKEN_RE.findall((text or "").lower())
 
+    @staticmethod
+    def infer_category(value):
+        text = (value or "").lower()
+        for category, keywords in CATEGORIES.items():
+            if any(keyword in text for keyword in keywords):
+                return category
+        return "general"
+
+    @staticmethod
+    def infer_site(url):
+        parsed = urlparse(url)
+        return (parsed.netloc or "").split(":")[0].lower()
+
     def add_document(self, url, title, text):
-        """Insert or refresh one crawled page and update both indexes."""
         title = (title or "").strip()[:1000]
         text = (text or "").strip()
         if not url or not text:
             return
+
+        category = self.infer_category(f"{title} {text}")
+        site = self.infer_site(url)
+
         existing = self.connection.execute("SELECT id FROM documents WHERE url = ?", (url,)).fetchone()
         if existing:
             doc_id = existing["id"]
             self.connection.execute("DELETE FROM documents_fts WHERE rowid = ?", (doc_id,))
             self.connection.execute("DELETE FROM vectors WHERE document_id = ?", (doc_id,))
             self.connection.execute(
-                "UPDATE documents SET title = ?, text = ?, fetched_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (title, text, doc_id),
+                "UPDATE documents SET title = ?, text = ?, category = ?, site = ?, fetched_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (title, text, category, site, doc_id),
             )
         else:
-            cursor = self.connection.execute("INSERT INTO documents(url, title, text) VALUES (?, ?, ?)", (url, title, text))
+            cursor = self.connection.execute(
+                "INSERT INTO documents(url, title, text, category, site) VALUES (?, ?, ?, ?, ?)",
+                (url, title, text, category, site),
+            )
             doc_id = cursor.lastrowid
-        self.connection.execute("INSERT INTO documents_fts(rowid, title, text) VALUES (?, ?, ?)", (doc_id, title, text))
+
+        self.connection.execute(
+            "INSERT INTO documents_fts(rowid, title, text, category, site) VALUES (?, ?, ?, ?, ?)",
+            (doc_id, title, text, category, site),
+        )
+
         if self._encoder is not None:
             embedding = self._encoder.encode(f"{title}\n{text[:12000]}", normalize_embeddings=True)
             self.connection.execute(
@@ -102,7 +136,7 @@ class SearchEngine:
         if self._encoder is None:
             return []
         rows = self.connection.execute(
-            "SELECT d.id, d.url, d.title, d.text, v.embedding FROM vectors v "
+            "SELECT d.id, d.url, d.title, d.text, d.category, d.site, v.embedding FROM vectors v "
             "JOIN documents d ON d.id = v.document_id WHERE v.model = ?",
             ("all-MiniLM-L6-v2",),
         ).fetchall()
@@ -116,31 +150,32 @@ class SearchEngine:
             scored.append((row, score))
         return [row for row, _ in sorted(scored, key=lambda pair: pair[1], reverse=True)[:limit]]
 
-    def search(self, query, top_k=10):
+    def search(self, query, top_k=10, category="all", sort="relevance"):
         terms = self.tokenize(query)
         if not terms or top_k <= 0:
             return []
-        # Quote each token so user-entered FTS operators cannot alter the query grammar.
+
         fts_query = " OR ".join('"' + term.replace('"', '""') + '"' for term in terms)
         keyword_rows = self.connection.execute(
-            "SELECT d.id, d.url, d.title, d.text FROM documents_fts f "
+            "SELECT d.id, d.url, d.title, d.text, d.category, d.site FROM documents_fts f "
             "JOIN documents d ON d.id = f.rowid WHERE documents_fts MATCH ? LIMIT 1000",
             (fts_query,),
         ).fetchall()
-        vector_rows = self._vector_candidates(query, 200)
+        vector_rows = self._vector_candidates(query, 250)
         candidates = {row["id"]: row for row in keyword_rows}
         candidates.update({row["id"]: row for row in vector_rows})
         if not candidates:
             return []
 
-        # BM25 scoring over the candidate set, combined with vector/keyword ranks via RRF.
         docs = list(candidates.values())
         token_docs = [self.tokenize(row["title"] + " " + row["text"]) for row in docs]
         avg_len = sum(map(len, token_docs)) / max(len(token_docs), 1)
+
         doc_freq = {}
         for tokens in token_docs:
             for token in set(tokens):
                 doc_freq[token] = doc_freq.get(token, 0) + 1
+
         query_terms = set(terms)
         bm25_scores = {}
         k1, b = 1.5, 0.75
@@ -157,26 +192,57 @@ class SearchEngine:
                 denominator = frequency + k1 * (1 - b + b * len(tokens) / max(avg_len, 1))
                 score += idf * (frequency * (k1 + 1)) / denominator
             bm25_scores[row["id"]] = score
+
         bm25_order = sorted(bm25_scores, key=bm25_scores.get, reverse=True)
         keyword_order = [row["id"] for row in keyword_rows]
         vector_order = [row["id"] for row in vector_rows]
-        ranks = {"bm25": bm25_order, "keyword": keyword_order, "vector": vector_order}
         fused = {}
-        for source, ordered_ids in ranks.items():
+        for source, ordered_ids in {"bm25": bm25_order, "keyword": keyword_order, "vector": vector_order}.items():
             weight = 1.0 if source == "bm25" else (0.8 if source == "vector" else 0.7)
             for rank, doc_id in enumerate(ordered_ids, start=1):
                 fused[doc_id] = fused.get(doc_id, 0.0) + weight / (60 + rank)
 
-        ordered = sorted(candidates.values(), key=lambda row: fused.get(row["id"], 0), reverse=True)[:max(top_k * 5, top_k)]
+        ordered = sorted(candidates.values(), key=lambda row: fused.get(row["id"], 0), reverse=True)[: max(top_k * 5, top_k)]
         if self._cross_encoder is not None and ordered:
             pairs = [(query, (row["title"] + " " + row["text"])[:3000]) for row in ordered]
             scores = self._cross_encoder.predict(pairs)
             ordered = [row for _, row in sorted(zip(scores, ordered), key=lambda item: float(item[0]), reverse=True)]
 
+        filtered = []
+        for row in ordered:
+            row_category = (row["category"] or "general").lower()
+            if category and category != "all" and row_category != category:
+                continue
+            filtered.append(row)
+
+        if not filtered:
+            if category and category != "all":
+                filtered = list(ordered)
+            else:
+                return []
+
+        if sort == "latest":
+            filtered.sort(key=lambda row: row["id"], reverse=True)
+        elif sort == "site":
+            filtered.sort(key=lambda row: (row["site"] or "", row["title"].lower()))
+        else:
+            filtered.sort(key=lambda row: fused.get(row["id"], 0.0), reverse=True)
+
         results = []
-        for row in ordered[:top_k]:
+        for row in filtered[:top_k]:
             plain_text = re.sub(r"\s+", " ", row["text"]).strip()
-            results.append(SearchResult(row["url"], row["title"], plain_text[:280] + ("…" if len(plain_text) > 280 else ""), fused.get(row["id"], 0.0)))
+            snippet = plain_text[:260] + ("…" if len(plain_text) > 260 else "")
+            row_category = (row["category"] or "general").lower()
+            results.append(
+                SearchResult(
+                    url=row["url"],
+                    title=row["title"],
+                    snippet=snippet,
+                    score=float(fused.get(row["id"], 0.0)),
+                    category=row_category,
+                    site=row["site"],
+                )
+            )
         return results
 
     def count(self):
