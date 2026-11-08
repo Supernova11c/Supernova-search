@@ -1,0 +1,2 @@
+# Optional local semantic embeddings and cross-encoder reranking.
+sentence-transformers>=3.0,<6

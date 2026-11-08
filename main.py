@@ -1,98 +1,52 @@
-import math
-import re
-from collections import Counter
+"""Command-line interface for crawling and searching a small web corpus."""
+
+import argparse
+import sys
+
+from crawler import Crawler
+from search_engine import SearchEngine
 
 
-class SimpleSearchEngine:
-    """A lightweight in-memory search engine using TF-IDF and cosine similarity."""
+def main():
+    parser = argparse.ArgumentParser(description="Crawl websites and search their indexed pages.")
+    parser.add_argument("--db", default="supernova.db", help="SQLite index path (default: supernova.db)")
+    parser.add_argument("--semantic", action="store_true", help="Use the optional sentence-transformers vector model")
+    parser.add_argument("--rerank", action="store_true", help="Use the optional cross-encoder reranker")
+    commands = parser.add_subparsers(dest="command", required=True)
 
-    def __init__(self, documents):
-        self.documents = documents
-        self.tokens_by_document = [self._tokenize(doc) for doc in documents]
-        self.vocabulary = set().union(*self.tokens_by_document) if self.tokens_by_document else set()
-        self.doc_count = len(documents)
-        self.doc_frequency = {term: 0 for term in self.vocabulary}
+    crawl = commands.add_parser("crawl", help="Crawl and index one or more seed URLs")
+    crawl.add_argument("urls", nargs="+", help="HTTP(S) URLs to start crawling from")
+    crawl.add_argument("--max-pages", type=int, default=100, help="Maximum pages to index (default: 100)")
+    crawl.add_argument("--max-depth", type=int, default=2, help="Maximum link depth from each seed (default: 2)")
+    crawl.add_argument("--delay", type=float, default=1.0, help="Minimum delay between requests per host in seconds")
 
-        for terms in self.tokens_by_document:
-            unique_terms = set(terms)
-            for term in unique_terms:
-                self.doc_frequency[term] += 1
+    search = commands.add_parser("search", help="Search indexed pages")
+    search.add_argument("query", help="Search query")
+    search.add_argument("--top-k", type=int, default=10, help="Maximum results to show")
 
-        self.idf = {
-            term: math.log((1 + self.doc_count) / (1 + self.doc_frequency.get(term, 0))) + 1.0
-            for term in self.vocabulary
-        }
+    args = parser.parse_args()
+    if args.command == "crawl" and (args.max_pages < 1 or args.max_depth < 0 or args.delay < 0):
+        parser.error("--max-pages must be positive; --max-depth and --delay cannot be negative")
+    if args.command == "search" and args.top_k < 1:
+        parser.error("--top-k must be positive")
 
-    @staticmethod
-    def _tokenize(text):
-        return re.findall(r"[a-z0-9]+", text.lower())
-
-    def _document_vector(self, terms):
-        counts = Counter(terms)
-        vector = {}
-        for term, count in counts.items():
-            if term in self.idf:
-                vector[term] = count * self.idf[term]
-        return vector
-
-    def search(self, query, top_k=5):
-        query_terms = self._tokenize(query)
-        if not query_terms:
-            return []
-
-        query_counts = Counter(query_terms)
-        query_vector = {}
-        for term, count in query_counts.items():
-            if term in self.idf:
-                query_vector[term] = math.log(1 + count) * self.idf[term]
-
-        if not query_vector:
-            return []
-
-        query_norm = math.sqrt(sum(value * value for value in query_vector.values()))
-        if query_norm == 0:
-            return []
-
-        ranked = []
-        for index, doc_terms in enumerate(self.tokens_by_document):
-            document_vector = self._document_vector(doc_terms)
-            if not document_vector:
-                continue
-
-            doc_norm = math.sqrt(sum(value * value for value in document_vector.values()))
-            if doc_norm == 0:
-                continue
-
-            score = 0.0
-            shared_terms = set(document_vector).intersection(query_vector)
-            for term in shared_terms:
-                score += document_vector[term] * query_vector[term]
-
-            score /= doc_norm * query_norm
-            if score > 0:
-                ranked.append((index, score))
-
-        ranked.sort(key=lambda item: item[1], reverse=True)
-        return ranked[:top_k]
-
-
-def build_demo_documents():
-    return [
-        "Python is a high-level programming language used for web development and automation.",
-        "Data scientists use Python libraries like pandas and scikit-learn for analysis.",
-        "Search engines index documents and rank results based on relevance and keywords.",
-        "A web backend can be built using Python frameworks such as Flask and Django.",
-        "Machine learning models are trained using large datasets and optimization algorithms.",
-        "Simple search engines often tokenize text and compute keyword similarity scores.",
-    ]
+    try:
+        with SearchEngine(args.db, semantic=args.semantic, rerank=args.rerank) as engine:
+            if args.command == "crawl":
+                crawler = Crawler(engine, max_pages=args.max_pages, max_depth=args.max_depth, delay=args.delay)
+                count = crawler.crawl(args.urls)
+                print(f"Indexed {count} page(s) into {args.db}")
+            else:
+                results = engine.search(args.query, top_k=args.top_k)
+                if not results:
+                    print("No matches found. Crawl some sites first, or try a different query.")
+                    return
+                for rank, result in enumerate(results, start=1):
+                    print(f"{rank}. {result.title or result.url}\n   {result.url}\n   {result.snippet}\n   score: {result.score:.4f}\n")
+    except RuntimeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
 
 
 if __name__ == "__main__":
-    documents = build_demo_documents()
-    engine = SimpleSearchEngine(documents)
-    query = "python search engine"
-    results = engine.search(query, top_k=5)
-
-    print(f"Searching for: '{query}'\n")
-    for index, score in results:
-        print(f"{index + 1}. Score: {score:.3f} - {documents[index]}")
+    main()
