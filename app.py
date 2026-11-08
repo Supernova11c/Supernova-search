@@ -34,6 +34,16 @@ def create_app(test_config=None):
         except (OSError, RuntimeError):
             return 0
 
+    def _categories():
+        return [
+            ("all", "All"),
+            ("tech", "Tech"),
+            ("science", "Science"),
+            ("business", "Business"),
+            ("health", "Health"),
+            ("news", "News"),
+        ]
+
     @app.get("/")
     def index():
         query = request.args.get("q", "").strip()[:300]
@@ -45,6 +55,7 @@ def create_app(test_config=None):
             try:
                 with SearchEngine(app.config["DATABASE"]) as engine:
                     results = engine.search(query, top_k=10, category=category, sort=sort)
+                    engine.record_search(query, category, sort, len(results))
                     document_count = engine.count()
             except (OSError, RuntimeError) as exc:
                 document_count = 0
@@ -56,24 +67,37 @@ def create_app(test_config=None):
             except (OSError, RuntimeError):
                 document_count = 0
 
-        categories = [
-            ("all", "All"),
-            ("tech", "Tech"),
-            ("science", "Science"),
-            ("business", "Business"),
-            ("health", "Health"),
-            ("news", "News"),
-        ]
         return render_template(
             "index.html",
             query=query,
             results=results,
             document_count=document_count,
             error=error,
-            categories=categories,
+            categories=_categories(),
             selected_category=category,
             selected_sort=sort,
         )
+
+    @app.get("/dashboard")
+    def dashboard():
+        stats = {
+            "total_documents": 0,
+            "total_searches": 0,
+            "top_queries": [],
+            "recent_queries": [],
+            "recent_crawls": [],
+        }
+        try:
+            with SearchEngine(app.config["DATABASE"]) as engine:
+                stats = engine.get_dashboard_stats()
+                stats["recent_crawls"] = engine.get_recent_crawls(limit=8)
+        except (OSError, RuntimeError):
+            pass
+
+        recent_jobs = []
+        with jobs_lock:
+            recent_jobs = list(jobs.values())[-6:][::-1]
+        return render_template("dashboard.html", **stats, recent_jobs=recent_jobs)
 
     @app.post("/crawl")
     def start_crawl():
@@ -86,14 +110,7 @@ def create_app(test_config=None):
                 results=[],
                 document_count=_count_documents(),
                 error="Enter a valid public HTTP or HTTPS website URL.",
-                categories=[
-                    ("all", "All"),
-                    ("tech", "Tech"),
-                    ("science", "Science"),
-                    ("business", "Business"),
-                    ("health", "Health"),
-                    ("news", "News"),
-                ],
+                categories=_categories(),
                 selected_category="all",
                 selected_sort="relevance",
             ), 400
@@ -106,14 +123,7 @@ def create_app(test_config=None):
                     results=[],
                     document_count=_count_documents(),
                     error="A crawl is already running. Please wait for it to finish.",
-                    categories=[
-                        ("all", "All"),
-                        ("tech", "Tech"),
-                        ("science", "Science"),
-                        ("business", "Business"),
-                        ("health", "Health"),
-                        ("news", "News"),
-                    ],
+                    categories=_categories(),
                     selected_category="all",
                     selected_sort="relevance",
                 ), 409
@@ -131,9 +141,15 @@ def create_app(test_config=None):
                     crawler = Crawler(engine, max_pages=25, max_depth=1, delay=1.0)
                     indexed = crawler.crawl([seed_url])
                     total = engine.count()
+                    engine.record_crawl(seed_url, indexed, "complete")
             with jobs_lock:
                 jobs[job_id].update(status="complete", indexed=indexed, total=total)
         except Exception as exc:
+            try:
+                with SearchEngine(app.config["DATABASE"]) as engine:
+                    engine.record_crawl(seed_url, 0, "failed")
+            except Exception:
+                pass
             with jobs_lock:
                 jobs[job_id].update(status="failed", error=str(exc))
 
@@ -159,6 +175,14 @@ def create_app(test_config=None):
             if job:
                 return jsonify(job)
         return jsonify({"error": "Crawl job not found"}), 404
+
+    @app.get("/api/dashboard")
+    def dashboard_api():
+        try:
+            with SearchEngine(app.config["DATABASE"]) as engine:
+                return jsonify(engine.get_dashboard_stats())
+        except (OSError, RuntimeError):
+            return jsonify({"total_documents": 0, "total_searches": 0, "top_queries": [], "recent_queries": []})
 
     return app
 

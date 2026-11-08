@@ -73,6 +73,21 @@ class SearchEngine:
                 model TEXT NOT NULL,
                 embedding TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS search_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                query TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT 'all',
+                sort TEXT NOT NULL DEFAULT 'relevance',
+                result_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS crawl_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                url TEXT NOT NULL,
+                status TEXT NOT NULL,
+                pages INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             CREATE INDEX IF NOT EXISTS documents_url_idx ON documents(url);
         """)
         self.connection.commit()
@@ -131,6 +146,43 @@ class SearchEngine:
                 (doc_id, "all-MiniLM-L6-v2", json.dumps(embedding.tolist())),
             )
         self.connection.commit()
+
+    def record_search(self, query, category, sort, result_count):
+        self.connection.execute(
+            "INSERT INTO search_logs(query, category, sort, result_count) VALUES (?, ?, ?, ?)",
+            (query.strip()[:300], category or "all", sort or "relevance", result_count),
+        )
+        self.connection.commit()
+
+    def record_crawl(self, url, pages, status):
+        self.connection.execute(
+            "INSERT INTO crawl_logs(url, pages, status) VALUES (?, ?, ?)",
+            (url or "", int(max(0, pages)), status or "failed"),
+        )
+        self.connection.commit()
+
+    def get_dashboard_stats(self):
+        total_documents = self.count()
+        total_searches = self.connection.execute("SELECT COUNT(*) FROM search_logs").fetchone()[0]
+        top_queries = self.connection.execute(
+            "SELECT query, COUNT(*) AS count FROM search_logs GROUP BY query ORDER BY count DESC, query ASC LIMIT 5"
+        ).fetchall()
+        recent_queries = self.connection.execute(
+            "SELECT query, category, result_count, created_at FROM search_logs ORDER BY created_at DESC LIMIT 6"
+        ).fetchall()
+        return {
+            "total_documents": total_documents,
+            "total_searches": total_searches,
+            "top_queries": [dict(row) for row in top_queries],
+            "recent_queries": [dict(row) for row in recent_queries],
+        }
+
+    def get_recent_crawls(self, limit=8):
+        rows = self.connection.execute(
+            "SELECT url, status, pages, created_at FROM crawl_logs ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def _vector_candidates(self, query, limit):
         if self._encoder is None:

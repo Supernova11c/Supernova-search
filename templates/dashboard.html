@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#090b16">
+  <title>Dashboard — Supernova Search</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="ambient ambient-one"></div><div class="ambient ambient-two"></div>
+
+  <header class="topbar">
+    <a class="brand" href="{{ url_for('index') }}" aria-label="Supernova Search home">
+      <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span><span></span></span>
+      <span>supernova<span class="brand-light"> search</span></span>
+    </a>
+    <div class="topbar-actions">
+      <a class="tiny-link" href="{{ url_for('index') }}">Search</a>
+      <div class="index-indicator"><span class="pulse"></span>{{ total_documents }} pages indexed</div>
+    </div>
+  </header>
+
+  <main class="dashboard-shell page-shell">
+    <section class="dashboard-hero">
+      <div class="eyebrow"><span class="eyebrow-line"></span> OPERATIONS</div>
+      <h1>Search intelligence<span class="gradient-text"> dashboard</span></h1>
+      <p>Monitor site coverage, discover what people are searching for, and keep an eye on your crawl system.</p>
+    </section>
+
+    <section class="stat-grid">
+      <article class="stat-card">
+        <div class="stat-label">Documents</div>
+        <div class="stat-value">{{ total_documents }}</div>
+        <div class="stat-sub">Indexed pages</div>
+      </article>
+      <article class="stat-card">
+        <div class="stat-label">Searches</div>
+        <div class="stat-value">{{ total_searches }}</div>
+        <div class="stat-sub">Total queries logged</div>
+      </article>
+      <article class="stat-card">
+        <div class="stat-label">Popular</div>
+        <div class="stat-value">{{ (top_queries[0].query if top_queries else '—')[:18] }}</div>
+        <div class="stat-sub">Top query</div>
+      </article>
+      <article class="stat-card">
+        <div class="stat-label">Runtime</div>
+        <div class="stat-value">{{ recent_jobs|length if recent_jobs else 0 }}</div>
+        <div class="stat-sub">Recent crawl jobs</div>
+      </article>
+    </section>
+
+    <section class="dashboard-grid">
+      <div class="panel">
+        <div class="panel-header">
+          <div class="section-kicker">TOP QUERIES</div>
+          <a href="{{ url_for('index') }}" class="panel-link">open search</a>
+        </div>
+        <ul class="list-stack">
+          {% for item in top_queries %}
+            <li>
+              <span>{{ item.query }}</span>
+              <strong>{{ item.count }}</strong>
+            </li>
+          {% else %}
+            <li><span>No searches yet</span><strong>0</strong></li>
+          {% endfor %}
+        </ul>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <div class="section-kicker">RECENT SEARCHES</div>
+          <a href="{{ url_for('index') }}" class="panel-link">latest</a>
+        </div>
+        <ul class="list-stack">
+          {% for item in recent_queries %}
+            <li>
+              <span>{{ item.query }}</span>
+              <strong>{{ item.result_count }}</strong>
+            </li>
+          {% else %}
+            <li><span>No search history</span><strong>0</strong></li>
+          {% endfor %}
+        </ul>
+      </div>
+
+      <div class="panel span-two">
+        <div class="panel-header">
+          <div class="section-kicker">CRAWL HISTORY</div>
+          <a href="{{ url_for('index') }}#crawl-panel" class="panel-link">add site</a>
+        </div>
+        <div class="crawl-table">
+          {% for crawl in recent_crawls %}
+            <div class="table-row">
+              <div class="row-url">{{ crawl.url }}</div>
+              <div class="row-status {{ crawl.status }}">{{ crawl.status }}</div>
+              <div>{{ crawl.pages }} pages</div>
+              <div>{{ crawl.created_at }}</div>
+            </div>
+          {% else %}
+            <div class="empty-mini">No crawls recorded yet.</div>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="panel span-two">
+        <div class="panel-header">
+          <div class="section-kicker">ACTIVE JOBS</div>
+          <span class="panel-link muted">live</span>
+        </div>
+        <div class="job-list">
+          {% for job in recent_jobs %}
+            <div class="job-item">
+              <div>
+                <div class="job-url">{{ job.url }}</div>
+                <div class="job-state {{ job.status }}">{{ job.status }}</div>
+              </div>
+              <div class="job-stats">
+                {% if job.indexed is defined %}{{ job.indexed }} indexed{% else %}0 indexed{% endif %}
+              </div>
+            </div>
+          {% else %}
+            <div class="empty-mini">No jobs running.</div>
+          {% endfor %}
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
