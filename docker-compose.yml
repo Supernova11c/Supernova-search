@@ -1,0 +1,29 @@
+services:
+  web:
+    build: .
+    command: gunicorn --workers 2 --bind 0.0.0.0:5000 app:app
+    environment:
+      SUPERNOVA_DB: /data/supernova.db
+      SUPERNOVA_SECRET_KEY: ${SUPERNOVA_SECRET_KEY:?Set SUPERNOVA_SECRET_KEY in the environment}
+      SUPERNOVA_ADMIN_TOKEN: ${SUPERNOVA_ADMIN_TOKEN:?Set SUPERNOVA_ADMIN_TOKEN in the environment}
+      SUPERNOVA_COOKIE_SECURE: ${SUPERNOVA_COOKIE_SECURE:-0}
+    ports:
+      - "127.0.0.1:5000:5000"
+    volumes:
+      - supernova-data:/data
+    restart: unless-stopped
+
+  api:
+    build: .
+    command: uvicorn api:app --host 0.0.0.0 --port 8000
+    environment:
+      SUPERNOVA_DB: /data/supernova.db
+      SUPERNOVA_ADMIN_TOKEN: ${SUPERNOVA_ADMIN_TOKEN:?Set SUPERNOVA_ADMIN_TOKEN in the environment}
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - supernova-data:/data
+    restart: unless-stopped
+
+volumes:
+  supernova-data:

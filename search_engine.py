@@ -1,4 +1,4 @@
-"""SQLite-backed hybrid search with FTS5, BM25, optional embeddings and reranking."""
+"""SQLite-backed hybrid search with BM25, reciprocal-rank fusion, and admin boosts."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 
 TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
-
 CATEGORIES = {
     "tech": ["python", "programming", "software", "code", "web", "api", "developer", "machine", "data", "ai", "database", "server", "backend", "frontend"],
     "science": ["science", "research", "physics", "chemistry", "biology", "lab", "astronomy", "genetics", "equation"],
@@ -31,8 +30,6 @@ class SearchResult:
 
 
 class SearchEngine:
-    """Persistent hybrid search engine backed by SQLite FTS5."""
-
     def __init__(self, db_path="supernova.db", semantic=False, rerank=False):
         self.db_path = str(db_path)
         self.connection = sqlite3.connect(self.db_path)
@@ -41,30 +38,23 @@ class SearchEngine:
         self._encoder = None
         self._cross_encoder = None
         self._setup()
-
-        if semantic:
+        if semantic or rerank:
             try:
-                from sentence_transformers import SentenceTransformer
+                from sentence_transformers import CrossEncoder, SentenceTransformer
             except ImportError as exc:
-                raise RuntimeError("Semantic search requires optional dependencies: pip install -r requirements-semantic.txt") from exc
-            self._encoder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
-
-        if rerank:
-            try:
-                from sentence_transformers import CrossEncoder
-            except ImportError as exc:
-                raise RuntimeError("Reranking requires optional dependencies: pip install -r requirements-semantic.txt") from exc
-            self._cross_encoder = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+                raise RuntimeError("Semantic search requires: pip install -r requirements-semantic.txt") from exc
+            if semantic:
+                self._encoder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+            if rerank:
+                self._cross_encoder = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
     def _setup(self):
         self.connection.executescript("""
             CREATE TABLE IF NOT EXISTS documents (
-                id INTEGER PRIMARY KEY,
-                url TEXT NOT NULL UNIQUE,
-                title TEXT NOT NULL DEFAULT '',
-                text TEXT NOT NULL DEFAULT '',
-                category TEXT NOT NULL DEFAULT 'general',
-                site TEXT NOT NULL DEFAULT '',
+                id INTEGER PRIMARY KEY, url TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL DEFAULT '', text TEXT NOT NULL DEFAULT '',
+                category TEXT NOT NULL DEFAULT 'general', site TEXT NOT NULL DEFAULT '',
+                priority INTEGER NOT NULL DEFAULT 0,
                 fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
@@ -72,34 +62,30 @@ class SearchEngine:
             );
             CREATE TABLE IF NOT EXISTS vectors (
                 document_id INTEGER PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
-                model TEXT NOT NULL,
-                embedding TEXT NOT NULL
+                model TEXT NOT NULL, embedding TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS search_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                query TEXT NOT NULL,
-                category TEXT NOT NULL DEFAULT 'all',
-                sort TEXT NOT NULL DEFAULT 'relevance',
-                result_count INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                id INTEGER PRIMARY KEY AUTOINCREMENT, query TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT 'all', sort TEXT NOT NULL DEFAULT 'relevance',
+                result_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS crawl_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                url TEXT NOT NULL,
-                status TEXT NOT NULL,
-                pages INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT NOT NULL, status TEXT NOT NULL,
+                pages INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS collections (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                query TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
+                query TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             CREATE INDEX IF NOT EXISTS documents_url_idx ON documents(url);
+            CREATE INDEX IF NOT EXISTS documents_priority_idx ON documents(priority);
             CREATE INDEX IF NOT EXISTS search_logs_created_idx ON search_logs(created_at);
             CREATE INDEX IF NOT EXISTS crawl_logs_created_idx ON crawl_logs(created_at);
         """)
+        # Upgrade databases created by earlier Supernova Search versions.
+        columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(documents)")}
+        if "priority" not in columns:
+            self.connection.execute("ALTER TABLE documents ADD COLUMN priority INTEGER NOT NULL DEFAULT 0")
         self.connection.commit()
 
     @staticmethod
@@ -116,142 +102,117 @@ class SearchEngine:
 
     @staticmethod
     def infer_site(url):
-        parsed = urlparse(url)
-        return (parsed.netloc or "").split(":")[0].lower()
+        return (urlparse(url).hostname or "").lower()
 
     def add_document(self, url, title, text):
-        title = (title or "").strip()[:1000]
-        text = (text or "").strip()
+        title, text = (title or "").strip()[:1000], (text or "").strip()
         if not url or not text:
             return
-
-        category = self.infer_category(f"{title} {text}")
-        site = self.infer_site(url)
-
-        existing = self.connection.execute("SELECT id FROM documents WHERE url = ?", (url,)).fetchone()
+        category, site = self.infer_category(f"{title} {text}"), self.infer_site(url)
+        existing = self.connection.execute("SELECT id FROM documents WHERE url=?", (url,)).fetchone()
         if existing:
             doc_id = existing["id"]
-            self.connection.execute("DELETE FROM documents_fts WHERE rowid = ?", (doc_id,))
-            self.connection.execute("DELETE FROM vectors WHERE document_id = ?", (doc_id,))
+            self.connection.execute("DELETE FROM documents_fts WHERE rowid=?", (doc_id,))
+            self.connection.execute("DELETE FROM vectors WHERE document_id=?", (doc_id,))
             self.connection.execute(
-                "UPDATE documents SET title = ?, text = ?, category = ?, site = ?, fetched_at = CURRENT_TIMESTAMP WHERE id = ?",
+                "UPDATE documents SET title=?,text=?,category=?,site=?,fetched_at=CURRENT_TIMESTAMP WHERE id=?",
                 (title, text, category, site, doc_id),
             )
         else:
             cursor = self.connection.execute(
-                "INSERT INTO documents(url, title, text, category, site) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO documents(url,title,text,category,site) VALUES(?,?,?,?,?)",
                 (url, title, text, category, site),
             )
             doc_id = cursor.lastrowid
-
-        self.connection.execute(
-            "INSERT INTO documents_fts(rowid, title, text, category, site) VALUES (?, ?, ?, ?, ?)",
-            (doc_id, title, text, category, site),
-        )
-
+        self.connection.execute("INSERT INTO documents_fts(rowid,title,text,category,site) VALUES(?,?,?,?,?)",
+                                (doc_id, title, text, category, site))
         if self._encoder is not None:
             embedding = self._encoder.encode(f"{title}\n{text[:12000]}", normalize_embeddings=True)
-            self.connection.execute(
-                "INSERT OR REPLACE INTO vectors(document_id, model, embedding) VALUES (?, ?, ?)",
-                (doc_id, "all-MiniLM-L6-v2", json.dumps(embedding.tolist())),
-            )
+            self.connection.execute("INSERT OR REPLACE INTO vectors(document_id,model,embedding) VALUES(?,?,?)",
+                                    (doc_id, "all-MiniLM-L6-v2", json.dumps(embedding.tolist())))
         self.connection.commit()
 
+    def set_document_priority(self, url, priority):
+        self.connection.execute("UPDATE documents SET priority=? WHERE url=?", (int(priority), url))
+        self.connection.commit()
+
+    def set_document_priority_by_id(self, document_id, priority):
+        self.connection.execute("UPDATE documents SET priority=? WHERE id=?", (int(priority), document_id))
+        self.connection.commit()
+
+    def list_priority_documents(self, limit=30):
+        rows = self.connection.execute(
+            "SELECT id,url,title,priority,fetched_at FROM documents ORDER BY priority DESC,fetched_at DESC LIMIT ?",
+            (max(1, min(int(limit), 100)),),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def record_search(self, query, category, sort, result_count):
-        self.connection.execute(
-            "INSERT INTO search_logs(query, category, sort, result_count) VALUES (?, ?, ?, ?)",
-            (query.strip()[:300], category or "all", sort or "relevance", result_count),
-        )
+        self.connection.execute("INSERT INTO search_logs(query,category,sort,result_count) VALUES(?,?,?,?)",
+                                (query.strip()[:300], category or "all", sort or "relevance", result_count))
         self.connection.commit()
 
     def record_crawl(self, url, pages, status):
-        self.connection.execute(
-            "INSERT INTO crawl_logs(url, pages, status) VALUES (?, ?, ?)",
-            (url or "", int(max(0, pages)), status or "failed"),
-        )
+        self.connection.execute("INSERT INTO crawl_logs(url,pages,status) VALUES(?,?,?)",
+                                (url or "", max(0, int(pages)), status or "failed"))
         self.connection.commit()
 
     def save_collection(self, name, query):
-        cleaned_name = (name or "").strip()[:80]
-        cleaned_query = (query or "").strip()[:300]
-        if not cleaned_name or not cleaned_query:
+        name, query = (name or "").strip()[:80], (query or "").strip()[:300]
+        if not name or not query:
             return None
         cursor = self.connection.execute(
-            "INSERT INTO collections(name, query) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET query=excluded.query, created_at=CURRENT_TIMESTAMP",
-            (cleaned_name, cleaned_query),
+            "INSERT INTO collections(name,query) VALUES(?,?) ON CONFLICT(name) DO UPDATE SET query=excluded.query,created_at=CURRENT_TIMESTAMP",
+            (name, query),
         )
         self.connection.commit()
         return cursor.lastrowid
 
     def list_collections(self):
-        rows = self.connection.execute(
-            "SELECT id, name, query, created_at FROM collections ORDER BY created_at DESC LIMIT 20"
-        ).fetchall()
-        return [dict(row) for row in rows]
+        return [dict(row) for row in self.connection.execute(
+            "SELECT id,name,query,created_at FROM collections ORDER BY created_at DESC LIMIT 20").fetchall()]
 
     def delete_collection(self, collection_id):
-        self.connection.execute("DELETE FROM collections WHERE id = ?", (collection_id,))
+        self.connection.execute("DELETE FROM collections WHERE id=?", (collection_id,))
         self.connection.commit()
 
     def collection_count(self):
         return self.connection.execute("SELECT COUNT(*) FROM collections").fetchone()[0]
 
     def get_dashboard_stats(self):
-        total_documents = self.count()
-        total_searches = self.connection.execute("SELECT COUNT(*) FROM search_logs").fetchone()[0]
-        top_queries = self.connection.execute(
-            "SELECT query, COUNT(*) AS count FROM search_logs GROUP BY query ORDER BY count DESC, query ASC LIMIT 5"
-        ).fetchall()
-        recent_queries = self.connection.execute(
-            "SELECT query, category, result_count, created_at FROM search_logs ORDER BY created_at DESC LIMIT 6"
-        ).fetchall()
-        category_breakdown = self.connection.execute(
-            "SELECT category, COUNT(*) AS count FROM search_logs GROUP BY category ORDER BY count DESC LIMIT 5"
-        ).fetchall()
-        return {
-            "total_documents": total_documents,
-            "total_searches": total_searches,
-            "top_queries": [dict(row) for row in top_queries],
-            "recent_queries": [dict(row) for row in recent_queries],
-            "category_breakdown": [dict(row) for row in category_breakdown],
-        }
+        top = self.connection.execute("SELECT query,COUNT(*) AS count FROM search_logs GROUP BY query ORDER BY count DESC,query LIMIT 5").fetchall()
+        recent = self.connection.execute("SELECT query,category,result_count,created_at FROM search_logs ORDER BY id DESC LIMIT 6").fetchall()
+        categories = self.connection.execute("SELECT category,COUNT(*) AS count FROM search_logs GROUP BY category ORDER BY count DESC LIMIT 5").fetchall()
+        return {"total_documents": self.count(),
+                "total_searches": self.connection.execute("SELECT COUNT(*) FROM search_logs").fetchone()[0],
+                "top_queries": [dict(row) for row in top], "recent_queries": [dict(row) for row in recent],
+                "category_breakdown": [dict(row) for row in categories]}
 
     def get_recent_crawls(self, limit=8):
-        rows = self.connection.execute(
-            "SELECT url, status, pages, created_at FROM crawl_logs ORDER BY created_at DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
+        rows = self.connection.execute("SELECT url,status,pages,created_at FROM crawl_logs ORDER BY id DESC LIMIT ?",
+                                        (max(1, min(int(limit), 100)),)).fetchall()
         return [dict(row) for row in rows]
 
     def _vector_candidates(self, query, limit):
         if self._encoder is None:
             return []
         rows = self.connection.execute(
-            "SELECT d.id, d.url, d.title, d.text, d.category, d.site, v.embedding FROM vectors v "
-            "JOIN documents d ON d.id = v.document_id WHERE v.model = ?",
-            ("all-MiniLM-L6-v2",),
-        ).fetchall()
+            "SELECT d.id,d.url,d.title,d.text,d.category,d.site,d.priority,v.embedding FROM vectors v "
+            "JOIN documents d ON d.id=v.document_id WHERE v.model=?", ("all-MiniLM-L6-v2",)).fetchall()
         if not rows:
             return []
         query_vector = self._encoder.encode(query, normalize_embeddings=True)
-        scored = []
-        for row in rows:
-            vector = json.loads(row["embedding"])
-            score = sum(float(a) * float(b) for a, b in zip(query_vector, vector))
-            scored.append((row, score))
+        scored = [(row, sum(float(a)*float(b) for a,b in zip(query_vector, json.loads(row["embedding"])))) for row in rows]
         return [row for row, _ in sorted(scored, key=lambda pair: pair[1], reverse=True)[:limit]]
 
     def search(self, query, top_k=10, category="all", sort="relevance"):
         terms = self.tokenize(query)
         if not terms or top_k <= 0:
             return []
-
         fts_query = " OR ".join('"' + term.replace('"', '""') + '"' for term in terms)
         keyword_rows = self.connection.execute(
-            "SELECT d.id, d.url, d.title, d.text, d.category, d.site FROM documents_fts f "
-            "JOIN documents d ON d.id = f.rowid WHERE documents_fts MATCH ? LIMIT 1000",
-            (fts_query,),
-        ).fetchall()
+            "SELECT d.id,d.url,d.title,d.text,d.category,d.site,d.priority FROM documents_fts f "
+            "JOIN documents d ON d.id=f.rowid WHERE documents_fts MATCH ? LIMIT 1000", (fts_query,)).fetchall()
         vector_rows = self._vector_candidates(query, 250)
         candidates = {row["id"]: row for row in keyword_rows}
         candidates.update({row["id"]: row for row in vector_rows})
@@ -260,80 +221,57 @@ class SearchEngine:
 
         docs = list(candidates.values())
         token_docs = [self.tokenize(row["title"] + " " + row["text"]) for row in docs]
-        avg_len = sum(map(len, token_docs)) / max(len(token_docs), 1)
-
-        doc_freq = {}
+        avg_len = sum(map(len, token_docs)) / max(1, len(token_docs))
+        df = {}
         for tokens in token_docs:
             for token in set(tokens):
-                doc_freq[token] = doc_freq.get(token, 0) + 1
-
-        query_terms = set(terms)
-        bm25_scores = {}
-        k1, b = 1.5, 0.75
+                df[token] = df.get(token, 0) + 1
+        scores, k1, b = {}, 1.5, 0.75
         for row, tokens in zip(docs, token_docs):
-            frequencies = {}
+            counts = {}
             for token in tokens:
-                frequencies[token] = frequencies.get(token, 0) + 1
+                counts[token] = counts.get(token, 0) + 1
             score = 0.0
-            for term in query_terms:
-                frequency = frequencies.get(term, 0)
-                if not frequency:
-                    continue
-                idf = math.log(1 + (len(docs) - doc_freq.get(term, 0) + 0.5) / (doc_freq.get(term, 0) + 0.5))
-                denominator = frequency + k1 * (1 - b + b * len(tokens) / max(avg_len, 1))
-                score += idf * (frequency * (k1 + 1)) / denominator
-            bm25_scores[row["id"]] = score
+            for term in set(terms):
+                freq = counts.get(term, 0)
+                if freq:
+                    term_df = df.get(term, 0)
+                    idf = math.log(1 + (len(docs) - term_df + 0.5) / (term_df + 0.5))
+                    score += idf * freq * (k1 + 1) / (freq + k1 * (1 - b + b * len(tokens) / max(1, avg_len)))
+            scores[row["id"]] = score
 
-        bm25_order = sorted(bm25_scores, key=bm25_scores.get, reverse=True)
-        keyword_order = [row["id"] for row in keyword_rows]
-        vector_order = [row["id"] for row in vector_rows]
+        orders = {
+            "bm25": sorted(scores, key=scores.get, reverse=True),
+            "keyword": [row["id"] for row in keyword_rows],
+            "vector": [row["id"] for row in vector_rows],
+        }
         fused = {}
-        for source, ordered_ids in {"bm25": bm25_order, "keyword": keyword_order, "vector": vector_order}.items():
-            weight = 1.0 if source == "bm25" else (0.8 if source == "vector" else 0.7)
-            for rank, doc_id in enumerate(ordered_ids, start=1):
+        for source, ordered_ids in orders.items():
+            weight = {"bm25": 1.0, "keyword": 0.7, "vector": 0.8}[source]
+            for rank, doc_id in enumerate(ordered_ids, 1):
                 fused[doc_id] = fused.get(doc_id, 0.0) + weight / (60 + rank)
+        # Editorial boosts are bounded and apply only after a document matches retrieval.
+        for row in docs:
+            fused[row["id"]] = fused.get(row["id"], 0.0) + max(0, min(100, row["priority"])) * 0.0002
 
-        ordered = sorted(candidates.values(), key=lambda row: fused.get(row["id"], 0), reverse=True)[: max(top_k * 5, top_k)]
+        ordered = sorted(candidates.values(), key=lambda row: fused.get(row["id"], 0), reverse=True)[:max(top_k*5, top_k)]
         if self._cross_encoder is not None and ordered:
-            pairs = [(query, (row["title"] + " " + row["text"])[:3000]) for row in ordered]
-            scores = self._cross_encoder.predict(pairs)
-            ordered = [row for _, row in sorted(zip(scores, ordered), key=lambda item: float(item[0]), reverse=True)]
-
-        filtered = []
-        for row in ordered:
-            row_category = (row["category"] or "general").lower()
-            if category and category != "all" and row_category != category:
-                continue
-            filtered.append(row)
-
-        if not filtered:
-            if category and category != "all":
-                filtered = list(ordered)
-            else:
-                return []
-
+            model_scores = self._cross_encoder.predict([(query, (row["title"] + " " + row["text"])[:3000]) for row in ordered])
+            ordered = [row for _, row in sorted(zip(model_scores, ordered), key=lambda pair: float(pair[0]), reverse=True)]
+        filtered = [row for row in ordered if category == "all" or (row["category"] or "general").lower() == category]
+        if not filtered and category != "all":
+            return []
         if sort == "latest":
             filtered.sort(key=lambda row: row["id"], reverse=True)
         elif sort == "site":
-            filtered.sort(key=lambda row: (row["site"] or "", row["title"].lower()))
+            filtered.sort(key=lambda row: ((row["site"] or ""), row["title"].lower()))
         else:
-            filtered.sort(key=lambda row: fused.get(row["id"], 0.0), reverse=True)
-
+            filtered.sort(key=lambda row: fused.get(row["id"], 0), reverse=True)
         results = []
         for row in filtered[:top_k]:
-            plain_text = re.sub(r"\s+", " ", row["text"]).strip()
-            snippet = plain_text[:260] + ("…" if len(plain_text) > 260 else "")
-            row_category = (row["category"] or "general").lower()
-            results.append(
-                SearchResult(
-                    url=row["url"],
-                    title=row["title"],
-                    snippet=snippet,
-                    score=float(fused.get(row["id"], 0.0)),
-                    category=row_category,
-                    site=row["site"],
-                )
-            )
+            text = re.sub(r"\s+", " ", row["text"]).strip()
+            results.append(SearchResult(row["url"], row["title"], text[:260] + ("…" if len(text)>260 else ""),
+                                        float(fused.get(row["id"], 0)), row["category"] or "general", row["site"] or ""))
         return results
 
     def count(self):

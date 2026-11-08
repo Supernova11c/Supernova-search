@@ -1,37 +1,49 @@
 # Supernova Search
 
-Supernova Search is a local Python web search engine with a polished dark interface. It crawls public websites, stores pages in SQLite, indexes keywords with FTS5, ranks with BM25-style scoring and reciprocal-rank fusion, and optionally adds semantic vectors and a neural cross-encoder reranker.
+Supernova Search is a local Python search application with a Flask UI, a FastAPI JSON API, SQLite FTS5 keyword retrieval, BM25-style ranking, rank fusion, optional local semantic vectors/reranking, and an authenticated admin panel for curated URL injection and bounded ranking boosts.
 
-## Install and launch the web UI
+## Run locally
 
 ```bash
 python -m venv .venv
-# Linux/macOS
-source .venv/bin/activate
+# Linux/macOS: source .venv/bin/activate
 # Windows PowerShell: .venv\\Scripts\\Activate.ps1
 pip install -r requirements.txt
+export SUPERNOVA_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
+export SUPERNOVA_ADMIN_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
 python app.py
 ```
 
-Open <http://127.0.0.1:5000>. Search indexed pages from the home page, or enter a public website URL in **Bring a website into orbit**. UI crawls are intentionally bounded to 25 pages and one link depth, are restricted to the seed host, and honor robots.txt. The app binds to localhost by default. Use `SUPERNOVA_DB` to change the SQLite database path, or `SUPERNOVA_PORT` to change the port.
+Open <http://127.0.0.1:5000>. The API runs separately with `uvicorn api:app --host 127.0.0.1 --port 8000`; its interactive docs are at `/docs`.
 
-## Crawl from the command line
+## Admin URL injection and ranking
 
-```bash
-python main.py crawl https://example.com --max-pages 100 --max-depth 2 --delay 1
-python main.py search "python search engine" --top-k 10
-```
+Configure `SUPERNOVA_ADMIN_TOKEN`, open `/admin/login`, and sign in with that token. The admin panel accepts a single public HTTP(S) URL and a priority from 1–100. It performs a bounded one-page crawl, respects robots.txt, and rejects non-public host addresses. A URL is not force-indexed if the site denies crawling or does not return indexable HTML. Priority is only a bounded ranking boost for matching documents, not a way to make irrelevant pages match every query. Set a page's priority to 0 to remove its boost.
 
-Use only on sites you own or have permission to crawl. The crawler uses a descriptive user agent, checks robots.txt, limits response sizes and timeouts, avoids non-public IP destinations, and stays on each seed's host.
-
-## Optional semantic retrieval and reranking
+Admin API equivalent:
 
 ```bash
-pip install -r requirements-semantic.txt
-python main.py --semantic --rerank search "how does a search engine rank pages"
+curl -X POST http://127.0.0.1:8000/admin/inject \\
+  -H "Authorization: Bearer $SUPERNOVA_ADMIN_TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d '{"url":"https://example.com/guide","priority":85}'
 ```
 
-The first semantic run downloads `sentence-transformers/all-MiniLM-L6-v2`; reranking uses `cross-encoder/ms-marco-MiniLM-L-6-v2`. Embeddings are stored in SQLite alongside the separate FTS5 keyword index. This lightweight implementation scans local vectors and is designed for personal/small collections, not web-scale search.
+## Docker
+
+Copy `.env.example` to `.env`, replace both secrets with strong random values, then run:
+
+```bash
+docker compose up --build
+```
+
+The Flask UI is on `127.0.0.1:5000`; FastAPI is on `127.0.0.1:8000`. Both share a persistent SQLite database volume. Put a TLS-terminating reverse proxy in front before exposing externally and set `SUPERNOVA_COOKIE_SECURE=1` behind HTTPS.
+
+## Indexing and ranking
+
+The keyword index and document metadata are in SQLite/FTS5; the optional semantic embeddings are stored separately in SQLite. Ranking combines BM25-style lexical scores, reciprocal-rank fusion, an optional sentence-transformers vector candidate set and cross-encoder reranking, plus the admin priority boost. Install optional ML support with `pip install -r requirements-semantic.txt`.
+
+This setup is intended for a single-machine, small-to-medium corpus. PostgreSQL/Qdrant are not enabled in this deployment yet; the storage interfaces should be migrated before using a distributed or high-volume production deployment. URL crawling should only target sites you own or are authorized to crawl.
 
 ## Tests
 
