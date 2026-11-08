@@ -20,6 +20,7 @@
     </a>
     <div class="topbar-actions">
       <a class="tiny-link" href="{{ url_for('index') }}">Search</a>
+      <a class="tiny-link" href="{{ url_for('collections_page') }}">Collections</a>
       <div class="index-indicator"><span class="pulse"></span>{{ total_documents }} pages indexed</div>
     </div>
   </header>
@@ -28,7 +29,7 @@
     <section class="dashboard-hero">
       <div class="eyebrow"><span class="eyebrow-line"></span> OPERATIONS</div>
       <h1>Search intelligence<span class="gradient-text"> dashboard</span></h1>
-      <p>Monitor site coverage, discover what people are searching for, and keep an eye on your crawl system.</p>
+      <p>Monitor site coverage, discover what people are searching for, and keep an eye on your crawl workflow.</p>
     </section>
 
     <section class="stat-grid">
@@ -48,9 +49,9 @@
         <div class="stat-sub">Top query</div>
       </article>
       <article class="stat-card">
-        <div class="stat-label">Runtime</div>
-        <div class="stat-value">{{ recent_jobs|length if recent_jobs else 0 }}</div>
-        <div class="stat-sub">Recent crawl jobs</div>
+        <div class="stat-label">Collections</div>
+        <div class="stat-value">{{ collections_count }}</div>
+        <div class="stat-sub">Saved searches</div>
       </article>
     </section>
 
@@ -84,7 +85,7 @@
               <strong>{{ item.result_count }}</strong>
             </li>
           {% else %}
-            <li><span>No search history</span><strong>0</strong></li>
+            <li><span>No recent history</span><strong>0</strong></li>
           {% endfor %}
         </ul>
       </div>
@@ -120,9 +121,7 @@
                 <div class="job-url">{{ job.url }}</div>
                 <div class="job-state {{ job.status }}">{{ job.status }}</div>
               </div>
-              <div class="job-stats">
-                {% if job.indexed is defined %}{{ job.indexed }} indexed{% else %}0 indexed{% endif %}
-              </div>
+              <div class="job-stats">{% if job.indexed is defined %}{{ job.indexed }} indexed{% else %}0 indexed{% endif %}</div>
             </div>
           {% else %}
             <div class="empty-mini">No jobs running.</div>

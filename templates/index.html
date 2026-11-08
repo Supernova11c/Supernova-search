@@ -19,6 +19,8 @@
       <span>supernova<span class="brand-light"> search</span></span>
     </a>
     <div class="topbar-actions">
+      <a class="tiny-link" href="{{ url_for('dashboard') }}">Dashboard</a>
+      <a class="tiny-link" href="{{ url_for('collections_page') }}">Collections</a>
       <div class="index-indicator"><span class="pulse"></span>{{ '{:,}'.format(document_count) }} pages indexed</div>
       <a class="tiny-link" href="#crawl-panel">Add site</a>
     </div>
@@ -68,11 +70,6 @@
           <a href="{{ url_for('index', q='web design') }}">web design</a>
         </div>
       </div>
-
-      <div class="recent-searches-wrap">
-        <div class="section-kicker">RECENT SEARCHES</div>
-        <div class="recent-searches" id="recent-searches"></div>
-      </div>
     </section>
 
     {% if error %}<div class="notice notice-error"><span>!</span>{{ error }}</div>{% endif %}
@@ -108,7 +105,7 @@
           <div class="empty-state">
             <div class="empty-orbit">✦</div>
             <h3>No pages found just yet</h3>
-            <p>Try a different query or index another site to expand your corpus.</p>
+            <p>Try a different query or add a site to expand your corpus.</p>
           </div>
         {% endif %}
       </section>
@@ -134,7 +131,5 @@
       <span>Curiosity, in the right direction.</span>
     </footer>
   </main>
-
-  <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>

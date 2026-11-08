@@ -27,13 +27,6 @@ def create_app(test_config=None):
     jobs_lock = threading.Lock()
     crawl_lock = threading.Lock()
 
-    def _count_documents():
-        try:
-            with SearchEngine(app.config["DATABASE"]) as engine:
-                return engine.count()
-        except (OSError, RuntimeError):
-            return 0
-
     def _categories():
         return [
             ("all", "All"),
@@ -44,6 +37,13 @@ def create_app(test_config=None):
             ("news", "News"),
         ]
 
+    def _count_documents():
+        try:
+            with SearchEngine(app.config["DATABASE"]) as engine:
+                return engine.count()
+        except (OSError, RuntimeError):
+            return 0
+
     @app.get("/")
     def index():
         query = request.args.get("q", "").strip()[:300]
@@ -51,6 +51,8 @@ def create_app(test_config=None):
         sort = request.args.get("sort", "relevance").strip().lower()
         results = []
         error = None
+        document_count = _count_documents()
+
         if query:
             try:
                 with SearchEngine(app.config["DATABASE"]) as engine:
@@ -58,13 +60,7 @@ def create_app(test_config=None):
                     engine.record_search(query, category, sort, len(results))
                     document_count = engine.count()
             except (OSError, RuntimeError) as exc:
-                document_count = 0
                 error = str(exc)
-        else:
-            try:
-                with SearchEngine(app.config["DATABASE"]) as engine:
-                    document_count = engine.count()
-            except (OSError, RuntimeError):
                 document_count = 0
 
         return render_template(
@@ -86,18 +82,55 @@ def create_app(test_config=None):
             "top_queries": [],
             "recent_queries": [],
             "recent_crawls": [],
+            "collections_count": 0,
+            "category_breakdown": [],
         }
         try:
             with SearchEngine(app.config["DATABASE"]) as engine:
                 stats = engine.get_dashboard_stats()
+                stats["collections_count"] = engine.collection_count()
                 stats["recent_crawls"] = engine.get_recent_crawls(limit=8)
         except (OSError, RuntimeError):
             pass
 
-        recent_jobs = []
         with jobs_lock:
             recent_jobs = list(jobs.values())[-6:][::-1]
+
         return render_template("dashboard.html", **stats, recent_jobs=recent_jobs)
+
+    @app.get("/collections")
+    def collections_page():
+        try:
+            with SearchEngine(app.config["DATABASE"]) as engine:
+                collections = engine.list_collections()
+                document_count = engine.count()
+        except (OSError, RuntimeError):
+            collections = []
+            document_count = 0
+
+        return render_template("collections.html", collections=collections, document_count=document_count)
+
+    @app.post("/collections")
+    def save_collection():
+        name = request.form.get("name", "").strip()
+        query = request.form.get("query", "").strip()
+        if not name or not query:
+            return redirect(url_for("collections_page"))
+        try:
+            with SearchEngine(app.config["DATABASE"]) as engine:
+                engine.save_collection(name, query)
+        except (OSError, RuntimeError):
+            pass
+        return redirect(url_for("collections_page"))
+
+    @app.post("/collections/<int:collection_id>/delete")
+    def delete_collection(collection_id):
+        try:
+            with SearchEngine(app.config["DATABASE"]) as engine:
+                engine.delete_collection(collection_id)
+        except (OSError, RuntimeError):
+            pass
+        return redirect(url_for("collections_page"))
 
     @app.post("/crawl")
     def start_crawl():
@@ -144,7 +177,7 @@ def create_app(test_config=None):
                     engine.record_crawl(seed_url, indexed, "complete")
             with jobs_lock:
                 jobs[job_id].update(status="complete", indexed=indexed, total=total)
-        except Exception as exc:
+        except Exception as exc:  # pragma: no cover
             try:
                 with SearchEngine(app.config["DATABASE"]) as engine:
                     engine.record_crawl(seed_url, 0, "failed")
@@ -176,13 +209,56 @@ def create_app(test_config=None):
                 return jsonify(job)
         return jsonify({"error": "Crawl job not found"}), 404
 
+    @app.get("/api/search")
+    def api_search():
+        query = request.args.get("q", "").strip()
+        category = request.args.get("category", "all").strip().lower()
+        sort = request.args.get("sort", "relevance").strip().lower()
+        top_k = max(1, min(50, int(request.args.get("top_k", "10") or "10")))
+
+        if not query:
+            return jsonify({"query": query, "results": []})
+
+        try:
+            with SearchEngine(app.config["DATABASE"]) as engine:
+                results = engine.search(query, top_k=top_k, category=category, sort=sort)
+                payload = [
+                    {
+                        "title": item.title,
+                        "url": item.url,
+                        "snippet": item.snippet,
+                        "score": item.score,
+                        "category": item.category,
+                        "site": item.site,
+                    }
+                    for item in results
+                ]
+                return jsonify({"query": query, "results": payload})
+        except (OSError, RuntimeError) as exc:
+            return jsonify({"query": query, "results": [], "error": str(exc)}), 500
+
+    @app.get("/api/collections")
+    def api_collections():
+        try:
+            with SearchEngine(app.config["DATABASE"]) as engine:
+                return jsonify({"collections": engine.list_collections()})
+        except (OSError, RuntimeError) as exc:
+            return jsonify({"collections": [], "error": str(exc)}), 500
+
     @app.get("/api/dashboard")
     def dashboard_api():
         try:
             with SearchEngine(app.config["DATABASE"]) as engine:
-                return jsonify(engine.get_dashboard_stats())
-        except (OSError, RuntimeError):
-            return jsonify({"total_documents": 0, "total_searches": 0, "top_queries": [], "recent_queries": []})
+                stats = engine.get_dashboard_stats()
+                stats["collections_count"] = engine.collection_count()
+                stats["recent_crawls"] = engine.get_recent_crawls(limit=8)
+                return jsonify(stats)
+        except (OSError, RuntimeError) as exc:
+            return jsonify({"error": str(exc), "total_documents": 0, "total_searches": 0, "top_queries": [], "recent_queries": [], "recent_crawls": [], "collections_count": 0}), 500
+
+    @app.get("/api/health")
+    def health_check():
+        return jsonify({"status": "ok", "documents": _count_documents()})
 
     return app
 

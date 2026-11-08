@@ -31,7 +31,7 @@ class SearchResult:
 
 
 class SearchEngine:
-    """Persistent hybrid index. SQLite FTS5 stores keyword postings and vectors are kept separately."""
+    """Persistent hybrid search engine backed by SQLite FTS5."""
 
     def __init__(self, db_path="supernova.db", semantic=False, rerank=False):
         self.db_path = str(db_path)
@@ -41,12 +41,14 @@ class SearchEngine:
         self._encoder = None
         self._cross_encoder = None
         self._setup()
+
         if semantic:
             try:
                 from sentence_transformers import SentenceTransformer
             except ImportError as exc:
                 raise RuntimeError("Semantic search requires optional dependencies: pip install -r requirements-semantic.txt") from exc
             self._encoder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+
         if rerank:
             try:
                 from sentence_transformers import CrossEncoder
@@ -88,7 +90,15 @@ class SearchEngine:
                 pages INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS collections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                query TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             CREATE INDEX IF NOT EXISTS documents_url_idx ON documents(url);
+            CREATE INDEX IF NOT EXISTS search_logs_created_idx ON search_logs(created_at);
+            CREATE INDEX IF NOT EXISTS crawl_logs_created_idx ON crawl_logs(created_at);
         """)
         self.connection.commit()
 
@@ -161,6 +171,31 @@ class SearchEngine:
         )
         self.connection.commit()
 
+    def save_collection(self, name, query):
+        cleaned_name = (name or "").strip()[:80]
+        cleaned_query = (query or "").strip()[:300]
+        if not cleaned_name or not cleaned_query:
+            return None
+        cursor = self.connection.execute(
+            "INSERT INTO collections(name, query) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET query=excluded.query, created_at=CURRENT_TIMESTAMP",
+            (cleaned_name, cleaned_query),
+        )
+        self.connection.commit()
+        return cursor.lastrowid
+
+    def list_collections(self):
+        rows = self.connection.execute(
+            "SELECT id, name, query, created_at FROM collections ORDER BY created_at DESC LIMIT 20"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_collection(self, collection_id):
+        self.connection.execute("DELETE FROM collections WHERE id = ?", (collection_id,))
+        self.connection.commit()
+
+    def collection_count(self):
+        return self.connection.execute("SELECT COUNT(*) FROM collections").fetchone()[0]
+
     def get_dashboard_stats(self):
         total_documents = self.count()
         total_searches = self.connection.execute("SELECT COUNT(*) FROM search_logs").fetchone()[0]
@@ -170,11 +205,15 @@ class SearchEngine:
         recent_queries = self.connection.execute(
             "SELECT query, category, result_count, created_at FROM search_logs ORDER BY created_at DESC LIMIT 6"
         ).fetchall()
+        category_breakdown = self.connection.execute(
+            "SELECT category, COUNT(*) AS count FROM search_logs GROUP BY category ORDER BY count DESC LIMIT 5"
+        ).fetchall()
         return {
             "total_documents": total_documents,
             "total_searches": total_searches,
             "top_queries": [dict(row) for row in top_queries],
             "recent_queries": [dict(row) for row in recent_queries],
+            "category_breakdown": [dict(row) for row in category_breakdown],
         }
 
     def get_recent_crawls(self, limit=8):
