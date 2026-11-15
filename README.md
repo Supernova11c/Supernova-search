@@ -1,6 +1,6 @@
 # Supernova Search
 
-Supernova Search is a local Python search application with a Flask UI, a FastAPI JSON API, SQLite FTS5 keyword retrieval, BM25-style ranking, rank fusion, optional local semantic vectors/reranking, and an authenticated admin panel for curated URL injection and bounded ranking boosts.
+Supernova Search is a local Python search application with a Flask UI, a FastAPI JSON API, SQLite FTS5 keyword retrieval, BM25-style ranking, rank fusion, optional local semantic vectors/reranking, and an authenticated admin panel for curated URL injection and bounded ranking boosts. currently only 25 pages index supported 
 
 ## Run locally
 
